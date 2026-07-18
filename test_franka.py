@@ -3,78 +3,91 @@ import mujoco.viewer
 import numpy as np
 import time
 
-# 1. 加载模型与数据
 xml_path = r"scene.xml"
 model = mujoco.MjModel.from_xml_path(xml_path)
 data = mujoco.MjData(model)
 
-# 2. 找到末端执行器 (End-Effector)
-# 在官方模型中，连杆7 (link7) 或 hand 是末端。我们用 body 的名字获取其 ID
 ee_body_name = "link7"  
 ee_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, ee_body_name)
 
-# 3. 设定笛卡尔空间的阻抗参数 (X, Y, Z 三个方向的刚度和阻尼)
-# 这里的 Kp 变成了空间刚度 (N/m)，Kd 变成了空间阻尼 (Ns/m)
-Kp_x = np.array([1000.0, 1000.0, 1000.0]) 
-Kd_x = np.array([50.0, 50.0, 50.0])
+Kp_x = np.array([3000.0, 3000.0, 3000.0]) 
+Kd_x = np.array([110.0, 110.0, 110.0])
 
-# 需要提前分配一个二维数组来接收它，存入的是末端执行器的平动雅可比 (3xnv)，其中 nv 是模型的自由度数量
 jacp = np.zeros((3, model.nv))
+jacp_dot = np.zeros((3, model.nv))
+M = np.zeros((model.nv, model.nv))
 
-print("🚀 启动笛卡尔空间 3D 阻抗控制...")
+# 初始化极其重要的黄金准备姿态，避开奇点
+q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+data.qpos[:7] = q_home
+mujoco.mj_forward(model, data) 
+
+print("🚀 启动完美轨迹跟踪 (反馈线性化 + 实时同步)...")
 
 with mujoco.viewer.launch_passive(model, data) as viewer:
     
-    # 记录起始时间，用于生成圆轨迹
-    start_time = time.time()
+    real_start_time = time.time()
     
     while viewer.is_running():
-        t = time.time() - start_time
+        real_elapsed = time.time() - real_start_time
         
-        # ==========================================
-        # 1. 轨迹规划：生成一个空间中的圆形目标轨迹
-        # 圆心在 (0.5, 0.0, 0.4)，半径 0.1m
-        x_target = np.array([
-            0.5, 
-            0.1 * np.sin(2.0 * t), 
-            0.4 + 0.1 * np.cos(2.0 * t)
-        ])
-        # ==========================================
+        # 内层物理循环
+        while data.time < real_elapsed:
+            t = data.time
+            dt = model.opt.timestep
+            
+            x_target = np.array([0.5, 0.1 * np.sin(2.0 * t), 0.4 + 0.1 * np.cos(2.0 * t)])
+            dx_target = np.array([0.0, 0.2 * np.cos(2.0 * t), -0.2 * np.sin(2.0 * t)])
+            ddx_target = np.array([0.0, -0.4 * np.sin(2.0 * t), -0.4 * np.cos(2.0 * t)])
+            
+            mujoco.mj_kinematics(model, data)
+            mujoco.mj_comPos(model, data)
         
-        # ==========================================
-        # 2. 运动学正解与雅可比提取 (MuJoCo 内置 API)
-        # 强制 MuJoCo 更新一次运动学链 (计算出所有连杆的位置和雅可比)
-        mujoco.mj_kinematics(model, data)# 正向运动学求解 + 刷新所有连杆根部世界位姿
-        mujoco.mj_comPos(model, data) # 基于上面算出的连杆位姿，进一步算出每根杆件质心的全局坐标与惯性矩阵
-        
-        # 获取末端当前实际 3D 位置
-        x_current = data.xpos[ee_body_id]
-        
-        # 提取末端的平动雅可比矩阵 (Translational Jacobian)
-        mujoco.mj_jacBodyCom(model, data, jacp, None, ee_body_id)
-        # 将一维数组 reshape 为 (3, nv) 的矩阵，并且只取前 7 列 (对应 7 个关节)
-        J_p = jacp[:, :7]
-        # ==========================================
-        
-        # ==========================================
-        # 3. 笛卡尔空间阻抗控制律解算
-        # 获取当前关节速度，通过雅可比矩阵正向映射得到末端空间速度
-        dq_current = data.qvel[:7]
-        dx_current = J_p @ dq_current # v = J * dq
-        
-        # 计算空间中的虚拟控制力 F_cmd (大小为 3x1)
-        F_cmd = Kp_x * (x_target - x_current) - Kd_x * dx_current
-        
-        # 核心映射：力矩 = 雅可比转置 * 空间力
-        tau_task = J_p.T @ F_cmd
-        
-        # 叠加重力与科里奥利力补偿
-        tau_final = tau_task + data.qfrc_bias[:7]
-        # ==========================================
-        
-        # 下发控制指令
-        data.ctrl[:7] = tau_final
-        
-        mujoco.mj_step(model, data)
+            # 1. 明确 x_current 是几何原点
+            x_current = data.xpos[ee_body_id]
+            
+            # ==========================================
+            # 修复 1：强行计算“几何原点 x_current”处的雅可比
+            # 废弃 mj_jacBodyCom，改用 mj_jac
+            # ==========================================
+            mujoco.mj_jac(model, data, jacp, None, x_current, ee_body_id)
+            J_p = jacp[:, :7]
+            
+            dq_current = data.qvel[:7]
+            dx_current = J_p @ dq_current
+            
+            # 2. 提取并计算笛卡尔空间质量惯性矩阵 Lambda (Λ)
+            mujoco.mj_fullM(model, M, data.qM)
+            M_7 = M[:7, :7]
+            M_inv = np.linalg.inv(M_7)
+            Lambda = np.linalg.inv(J_p @ M_inv @ J_p.T)
+            
+            # ==========================================
+            # 修复 2：求雅可比导数时，传入的也必须是“几何原点 x_current”
+            # ==========================================
+            mujoco.mj_jacDot(model, data, jacp_dot, None, x_current, ee_body_id)
+            J_dot_q_dot = jacp_dot[:, :7] @ dq_current
+            
+            e = x_target - x_current
+            de = dx_target - dx_current
+            
+            # ==========================================
+            # 修复 3：数学上绝对完美的完全体解耦控制律
+            # 将 PD 误差项也全部左乘 Lambda
+            # ==========================================
+            F_cmd = Lambda @ (Kp_x * e + Kd_x * de + ddx_target - J_dot_q_dot)
+            
+            tau_task = J_p.T @ F_cmd
+            tau_final = tau_task + data.qfrc_bias[:7]
+            
+            data.ctrl[:7] = tau_final
+            
+            mujoco.mj_step(model, data)
+            
+            # 打印逻辑移入内部：保证 t 和 x_target 绝对已被赋值
+            if int(t / dt) % 100 == 0:
+                error = np.linalg.norm(x_target - x_current)
+                print(f"Time: {t:.2f}s | Target: {x_target.round(4)} | Current: {x_current.round(4)} | Error: {error:.6f}")
+                
+        # 外层渲染刷新
         viewer.sync()
-        time.sleep(model.opt.timestep)
