@@ -20,7 +20,7 @@ M = np.zeros((model.nv, model.nv))
 # 初始化极其重要的黄金准备姿态，避开奇点
 q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
 data.qpos[:7] = q_home
-mujoco.mj_forward(model, data) 
+mujoco.mj_forward(model, data)
 
 print("🚀 启动完美轨迹跟踪 (反馈线性化 + 实时同步)...")
 
