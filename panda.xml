@@ -262,6 +262,30 @@
   </equality>
 
   <actuator>
+    <!-- 删掉原本的 general，替换为最底层的纯力矩 motor -->
+    <motor class="panda" name="actuator1" joint="joint1" ctrlrange="-87 87"/>
+    <motor class="panda" name="actuator2" joint="joint2" ctrlrange="-87 87"/>
+    <motor class="panda" name="actuator3" joint="joint3" ctrlrange="-87 87"/>
+    <motor class="panda" name="actuator4" joint="joint4" ctrlrange="-87 87"/>
+    <motor class="panda" name="actuator5" joint="joint5" ctrlrange="-12 12"/>
+    <motor class="panda" name="actuator6" joint="joint6" ctrlrange="-12 12"/>
+    <motor class="panda" name="actuator7" joint="joint7" ctrlrange="-12 12"/>
+    
+    <!-- 夹爪可以保留 general，因为我们通常只控制夹爪的位置 -->
+    <general class="panda" name="actuator8" tendon="split" forcerange="-100 100" ctrlrange="0 255"
+      gainprm="0.01568627451 0 0" biasprm="0 -100 -10"/>
+  </actuator>
+
+  <keyframe>
+    <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04" ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
+  </keyframe>
+
+  <contact>
+    <exclude body1="link0" body2="link1"/>
+  </contact>
+</mujoco>
+
+<!-- <actuator>
     <general class="panda" name="actuator1" joint="joint1" gainprm="4500" biasprm="0 -4500 -450"/>
     <general class="panda" name="actuator2" joint="joint2" gainprm="4500" biasprm="0 -4500 -450"
       ctrlrange="-1.7628 1.7628"/>
@@ -275,13 +299,4 @@
     <!-- Remap original ctrlrange (0, 0.04) to (0, 255): 0.04 * 100 / 255 = 0.01568627451 -->
     <general class="panda" name="actuator8" tendon="split" forcerange="-100 100" ctrlrange="0 255"
       gainprm="0.01568627451 0 0" biasprm="0 -100 -10"/>
-  </actuator>
-
-  <keyframe>
-    <key name="home" qpos="0 0 0 -1.57079 0 1.57079 -0.7853 0.04 0.04" ctrl="0 0 0 -1.57079 0 1.57079 -0.7853 255"/>
-  </keyframe>
-
-  <contact>
-    <exclude body1="link0" body2="link1"/>
-  </contact>
-</mujoco>
+  </actuator> -->
