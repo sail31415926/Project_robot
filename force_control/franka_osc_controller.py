@@ -32,7 +32,7 @@ class TrajectoryGenerator:
             pass
             
         elif t < 6.0:
-            # Phase 2: Y轴直线平滑移动 (使用 sin 函数保证速度连续)
+            # Phase 2: Y轴直线平滑移动
             phase_t = t - 3.0
             r = 0.15
             omega = np.pi / 3.0 # 3秒走半圈
