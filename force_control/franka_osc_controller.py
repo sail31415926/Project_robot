@@ -49,10 +49,11 @@ class TrajectoryGenerator:
             
             x[1] = y0 + 0.15 * np.sin(np.pi) # 锁定在 Y 的末端
             
-            # 使用一个平滑的指数衰减轨迹向下压
-            z_target = 0.2 + 0.3 * np.exp(-1.0 * phase_t)
-            z_vel = -0.3 * np.exp(-1.0 * phase_t)
-            z_acc = 0.3 * np.exp(-1.0 * phase_t)
+            # 修改侵入目标为 0.28 (只产生 2cm 压缩量)
+            # 衰减幅度从 0.3 改为 0.22 (因为 0.5 - 0.28 = 0.22)
+            z_target = 0.28 + 0.22 * np.exp(-1.0 * phase_t)
+            z_vel = -0.22 * np.exp(-1.0 * phase_t)
+            z_acc = 0.22 * np.exp(-1.0 * phase_t)
             
             x[2] = z_target
             dx[2] = z_vel
@@ -66,7 +67,7 @@ class OperationalSpaceController:
     【控制层】操作空间控制器 (Operational Space Controller, OSC)
     功能：封装底层数学推导，对外只暴露控制接口
     """
-    def __init__(self, model, data, ee_name="link7"):
+    def __init__(self, model, data, ee_name="hand"):
         self.model = model
         self.data = data
         self.ee_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, ee_name)
@@ -84,9 +85,21 @@ class OperationalSpaceController:
         # 1. 刷新状态与几何原点
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)
-        x_curr = self.data.xpos[self.ee_id]
         
-        # 2. 计算几何原点的雅可比矩阵
+        # ==========================================
+        # 修复核心：TCP (Tool Center Point) 精确标定补偿
+        # ==========================================
+        # 获取 hand 基座的绝对位置和旋转矩阵
+        hand_pos = self.data.xpos[self.ee_id]
+        hand_mat = self.data.xmat[self.ee_id].reshape(3, 3)
+        
+        # Franka 夹爪的指尖，相对于 hand 基座在 Z 轴方向上有约 10.34 厘米的物理延伸
+        tcp_offset_local = np.array([0.0, 0.0, 0.1034])
+        
+        # 通过矩阵乘法，算出【真正接触方块的指尖】在全局空间中的绝对坐标！
+        x_curr = hand_pos + hand_mat @ tcp_offset_local
+        
+        # 2. 将真正的指尖坐标传入 mj_jac，计算指尖的雅可比矩阵
         mujoco.mj_jac(self.model, self.data, self.jacp, None, x_curr, self.ee_id)
         J_p = self.jacp[:, :7]
         
@@ -107,13 +120,36 @@ class OperationalSpaceController:
         e = x_tar - x_curr
         de = dx_tar - dx_curr
         
+        tau_spring = J_p.T @ (Lambda @ (Kp * e))
         F_cmd = Lambda @ (Kp * e + Kd * de + ddx_tar - J_dot_q_dot)
-        
-        # 6. 映射到关节空间并补偿重力与科里奥利力
         tau_task = J_p.T @ F_cmd
-        tau_final = tau_task + self.data.qfrc_bias[:7]
         
-        return tau_final, np.linalg.norm(e)
+        # ==========================================
+        # 修复核心：动态一致性零空间投影 (Null-Space Projection)
+        # 目的：在不影响向下压力的前提下，防止手腕折叠和奇点崩溃
+        # ==========================================
+        # 计算零空间投影矩阵 N^T = I - J^T * Lambda * J * M^-1
+        I = np.eye(7)
+        N_T = I - J_p.T @ Lambda @ J_p @ M_inv
+        
+        # 设定一个极其舒适的黄金避奇点姿态
+        q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
+        q_curr = self.data.qpos[:7]
+        dq_curr = self.data.qvel[:7]
+        
+        # 在关节空间施加一个柔和的 PD 弹簧力，试图保持姿态
+        Kp_null = 50.0
+        Kd_null = 5.0
+        tau_posture = Kp_null * (q_home - q_curr) - Kd_null * dq_curr
+        
+        # 强制投影到零空间！(绝不干扰笛卡尔空间的 XYZ 任务)
+        tau_null = N_T @ tau_posture
+        
+        # 6. 综合控制律 = 主任务 + 零空间任务 + 动力学偏置
+        tau_final = tau_task + tau_null + self.data.qfrc_bias[:7]
+        
+        # 此时返回 tau_null，用于数学等式验证
+        return tau_final, np.linalg.norm(e), tau_spring, tau_null
 
 
 class DataLogger:
@@ -213,7 +249,7 @@ class FrankaSimNode:
         self.controller = OperationalSpaceController(self.model, self.data)# 挂载控制器
         self.logger = DataLogger() # 挂载日志记录器
         
-        self.Kp = np.array([3000.0, 3000.0, 3000.0])
+        self.Kp = np.array([3000.0, 3000.0, 1000.0])
         self.Kd = np.array([110.0, 110.0, 110.0])
         
         self._reset_home_pose() # 初始化机械臂位形
@@ -239,11 +275,25 @@ class FrankaSimNode:
                         # 轨迹生成器：获取当前时间下的目标状态
                         x_tar, dx_tar, ddx_tar = TrajectoryGenerator.get_state_machine_trajectory(t)
                         
-                        # 计算控制器输出的关节力矩
-                        tau, error = self.controller.compute_torque(x_tar, dx_tar, ddx_tar, self.Kp, self.Kd)
+                        # 注意这里多接收了一个 tau_null
+                        tau, error, tau_spring, tau_null = self.controller.compute_torque(x_tar, dx_tar, ddx_tar, self.Kp, self.Kd)
                         
                         self.data.ctrl[:7] = tau
                         mujoco.mj_step(self.model, self.data)
+                        
+                        if t > 8.0 and int(t / self.model.opt.timestep) % 500 == 0:
+                            tau_env = self.data.qfrc_constraint[:7]
+                            
+                            # 终极物理平衡等式：主任务弹簧力 + 零空间姿态力 + 环境反作用力 = 0
+                            residual = tau_spring + tau_null + tau_env
+                            residual_norm = np.linalg.norm(residual)
+                            
+                            print(f"[验证] Time: {t:.2f}s")
+                            print(f"  -> 主弹簧力矩 (tau_spring): {tau_spring.round(2)}")
+                            print(f"  -> 零空间力矩 (tau_null)  : {tau_null.round(2)}")
+                            print(f"  -> 环境力矩 (tau_env)   : {tau_env.round(2)}")
+                            print(f"  -> 残差范数 (Residual)  : {residual_norm:.6f} Nm")
+                            print("-" * 50)
                         
                         # 记录数据
                         self.logger.log_step(t, x_tar, self.data.xpos[self.controller.ee_id], error, tau)
