@@ -71,7 +71,7 @@ class OperationalSpaceController:
         self.data = data
         self.ee_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, ee_name)
         
-        # 预先分配内存，避免在 1000Hz 的高频控制循环中产生动态内存分配开销 (工业界 C++ 编程铁律)
+        # 预先分配内存，避免在 1000Hz 的高频控制循环中产生动态内存分配开销
         self.jacp = np.zeros((3, self.model.nv))
         self.jacp_dot = np.zeros((3, self.model.nv))
         self.M = np.zeros((self.model.nv, self.model.nv))
@@ -95,7 +95,7 @@ class OperationalSpaceController:
         
         # 3. 计算笛卡尔空间惯性矩阵 Lambda
         mujoco.mj_fullM(self.model, self.M, self.data.qM)
-        M_7 = self.M[:7, :7]
+        M_7 = self.M[:7, :7] # 只取前 7 个关节的质量矩阵，后两个是爪子
         M_inv = np.linalg.inv(M_7)
         Lambda = np.linalg.inv(J_p @ M_inv @ J_p.T)
         
