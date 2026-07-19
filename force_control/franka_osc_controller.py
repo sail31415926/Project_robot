@@ -137,7 +137,7 @@ class DataLogger:
         self.torque_data.append(tau.copy())
         
     def save_and_plot(self, filename="franka_tracking_log"):
-        """仿真结束时调用，保存 CSV 并绘制高水准图表"""
+        """仿真结束时调用，保存 CSV 并绘制图表"""
         
         # ==========================================
         # 新增拦截机制：如果数组为空，直接返回，避免绘图崩溃掩盖真实报错
@@ -210,20 +210,20 @@ class FrankaSimNode:
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.data = mujoco.MjData(self.model)
         
-        self.controller = OperationalSpaceController(self.model, self.data)
+        self.controller = OperationalSpaceController(self.model, self.data)# 挂载控制器
         self.logger = DataLogger() # 挂载日志记录器
         
         self.Kp = np.array([3000.0, 3000.0, 3000.0])
         self.Kd = np.array([110.0, 110.0, 110.0])
         
-        self._reset_home_pose()
+        self._reset_home_pose() # 初始化机械臂位形
         
     def _reset_home_pose(self):
         q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
         self.data.qpos[:7] = q_home
         mujoco.mj_forward(self.model, self.data)
         print("✅ 机械臂位形已初始化。")
-
+        
     def run(self):
         print("🚀 启动仿真... (关闭渲染窗口或按 Ctrl+C 自动生成图表)")
         try:
@@ -234,15 +234,18 @@ class FrankaSimNode:
                     real_elapsed = time.time() - real_start_time
                     
                     while self.data.time < real_elapsed:
-                        t = self.data.time
+                        t = self.data.time # 当前仿真时间
                         
+                        # 轨迹生成器：获取当前时间下的目标状态
                         x_tar, dx_tar, ddx_tar = TrajectoryGenerator.get_state_machine_trajectory(t)
+                        
+                        # 计算控制器输出的关节力矩
                         tau, error = self.controller.compute_torque(x_tar, dx_tar, ddx_tar, self.Kp, self.Kd)
                         
                         self.data.ctrl[:7] = tau
                         mujoco.mj_step(self.model, self.data)
                         
-                        # 高频记录数据
+                        # 记录数据
                         self.logger.log_step(t, x_tar, self.data.xpos[self.controller.ee_id], error, tau)
                         
                     viewer.sync()
