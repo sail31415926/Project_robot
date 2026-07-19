@@ -2,8 +2,9 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 import time
+import os
 
-xml_path = r"scene.xml"
+xml_path = r"./scene.xml"
 model = mujoco.MjModel.from_xml_path(xml_path)
 data = mujoco.MjData(model)
 
@@ -36,9 +37,7 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             t = data.time
             dt = model.opt.timestep
             
-            x_target = np.array([0.5, 0.1 * np.sin(2.0 * t), 0.4 + 0.1 * np.cos(2.0 * t)])
-            dx_target = np.array([0.0, 0.2 * np.cos(2.0 * t), -0.2 * np.sin(2.0 * t)])
-            ddx_target = np.array([0.0, -0.4 * np.sin(2.0 * t), -0.4 * np.cos(2.0 * t)])
+            x_target, dx_target, ddx_target = TrajectoryGenerator.get_state_machine_trajectory(t)
             
             mujoco.mj_kinematics(model, data) # 更新位置、速度、加速度
             mujoco.mj_comPos(model, data) # 更新质心位置
