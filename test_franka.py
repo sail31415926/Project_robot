@@ -40,8 +40,8 @@ with mujoco.viewer.launch_passive(model, data) as viewer:
             dx_target = np.array([0.0, 0.2 * np.cos(2.0 * t), -0.2 * np.sin(2.0 * t)])
             ddx_target = np.array([0.0, -0.4 * np.sin(2.0 * t), -0.4 * np.cos(2.0 * t)])
             
-            mujoco.mj_kinematics(model, data)
-            mujoco.mj_comPos(model, data)
+            mujoco.mj_kinematics(model, data) # 更新位置、速度、加速度
+            mujoco.mj_comPos(model, data) # 更新质心位置
         
             # 1. 明确 x_current 是几何原点
             x_current = data.xpos[ee_body_id]
