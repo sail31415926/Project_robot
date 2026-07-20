@@ -125,8 +125,8 @@ class OperationalSpaceController:
         tau_task = J_p.T @ F_cmd
         
         # ==========================================
-        # 修复核心：动态一致性零空间投影 (Null-Space Projection)
-        # 目的：在不影响向下压力的前提下，防止手腕折叠和奇点崩溃
+        # 动态一致性零空间投影 (Null-Space Projection)
+        # 目的：在不影响末端压力的前提下，防止手腕折叠和奇点崩溃
         # ==========================================
         # 计算零空间投影矩阵 N^T = I - J^T * Lambda * J * M^-1
         I = np.eye(7)
@@ -142,7 +142,7 @@ class OperationalSpaceController:
         Kd_null = 5.0
         tau_posture = Kp_null * (q_home - q_curr) - Kd_null * dq_curr
         
-        # 强制投影到零空间！(绝不干扰笛卡尔空间的 XYZ 任务)
+        # 强制投影到零空间(不干扰笛卡尔空间的末端, 即不产生末端加速度和影响末端的环境力)
         tau_null = N_T @ tau_posture
         
         # 6. 综合控制律 = 主任务 + 零空间任务 + 动力学偏置
@@ -241,7 +241,7 @@ class DataLogger:
 
 
 class FrankaSimNode:
-    """执行层：新增了生命周期管理和 DataLogger 挂载"""
+    """【执行层】：生命周期管理和 DataLogger 挂载"""
     def __init__(self, xml_path="scene.xml"):
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.data = mujoco.MjData(self.model)
