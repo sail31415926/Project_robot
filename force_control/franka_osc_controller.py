@@ -154,7 +154,7 @@ class OperationalSpaceController:
 class DataLogger:
     """
     【数据层】量化数据记录器
-    功能：高频记录仿真数据，离线保存并生成专业级论文图表
+    功能：高频记录仿真数据，离线保存并生成图表
     """
     def __init__(self):
         self.time_data = []
