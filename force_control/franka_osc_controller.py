@@ -7,64 +7,60 @@ import matplotlib.pyplot as plt
 
 class TrajectoryGenerator:
     """
-    【规划层】状态机轨迹生成模块
+    【规划层】轨迹生成模块(柔顺打磨抛光)
     """
     @staticmethod
     def get_state_machine_trajectory(t: float) -> tuple:
-        """
-        状态机设计：
-        0.0s - 3.0s: 定点保持 - 测试稳态抗重力
-        3.0s - 6.0s: Y轴直线平移 - 测试轨迹切换的平滑度
-        6.0s 之后:   Z轴下压撞击 - 故意指令其运动到 Z=0.2 (侵入刚性方块 10 厘米)
-        """
-        # 基础原点
-        x0 = 0.5
-        y0 = 0.0
+        # 定义打磨的振幅和频率
+        A_x, omega_x = 0.04, 0.8 * np.pi
+        A_y, omega_y = 0.06, 1.6 * np.pi
+        
+        # 修复核心：巧妙地向左后方偏移基础原点！
+        # 这样 1-cos 产生的 [0, 2A] 轨迹，就会完美居中于 0.5 和 0.0
+        x0 = 0.5 - A_x  # 降落点变成 X=0.46
+        y0 = 0.0 - A_y  # 降落点变成 Y=-0.06
         z0 = 0.5
         
         x = np.array([x0, y0, z0])
         dx = np.zeros(3)
         ddx = np.zeros(3)
         
-        if t < 3.0:
-            # Phase 1: 绝对定点保持
+        if t < 0.5:
+            # Phase 1:悬停0.5秒
             pass
             
-        elif t < 6.0:
-            # Phase 2: Y轴直线平滑移动
-            phase_t = t - 3.0
-            r = 0.15
-            omega = np.pi / 3.0 # 3秒走半圈
+        elif t < 2.0:
+            # Phase 2:1.5秒内快速下压，建立法向打磨力
+            phase_t = t - 0.5
             
-            x[1] = y0 + r * np.sin(omega * phase_t)
-            dx[1] = r * omega * np.cos(omega * phase_t)
-            ddx[1] = -r * omega**2 * np.sin(omega * phase_t)
-            
-        else:
-            # Phase 3: 阻抗接触测试 (Impedance Test)
-            # 让机械臂在 Y 轴保持偏置的同时，强行向 Z=0.2 处下压
-            # 由于刚性墙壁在 Z=0.3，机械臂会产生高达 10cm 的虚拟侵入误差！
-            phase_t = t - 6.0
-            
-            x[1] = y0 + 0.15 * np.sin(np.pi) # 锁定在 Y 的末端
-            
-            # 修改侵入目标为 0.28 (只产生 2cm 压缩量)
-            # 衰减幅度从 0.3 改为 0.22 (因为 0.5 - 0.28 = 0.22)
-            z_target = 0.28 + 0.22 * np.exp(-1.0 * phase_t)
-            z_vel = -0.22 * np.exp(-1.0 * phase_t)
-            z_acc = 0.22 * np.exp(-1.0 * phase_t)
+            z_target = 0.28 + 0.22 * np.exp(-3.0 * phase_t)
+            z_vel = -0.22 * 3.0 * np.exp(-3.0 * phase_t)
+            z_acc = 0.22 * 3.0**2 * np.exp(-3.0 * phase_t)
             
             x[2] = z_target
             dx[2] = z_vel
             ddx[2] = z_acc
+            
+        else:
+            # Phase 3:2.0秒之后立即开始居中8字打磨
+            phase_t = t - 2.0
+            x[2] = 0.28 # 死死锁住法向打磨力
+            
+            # X/Y轴位置平滑追踪，速度/加速度导数
+            x[0] = x0 + A_x * (1 - np.cos(omega_x * phase_t))
+            dx[0] = A_x * omega_x * np.sin(omega_x * phase_t)
+            ddx[0] = A_x * omega_x**2 * np.cos(omega_x * phase_t)
+            
+            x[1] = y0 + A_y * (1 - np.cos(omega_y * phase_t))
+            dx[1] = A_y * omega_y * np.sin(omega_y * phase_t)
+            ddx[1] = A_y * omega_y**2 * np.cos(omega_y * phase_t)
             
         return x, dx, ddx
 
 
 class OperationalSpaceController:
     """
-    【控制层】操作空间控制器 (Operational Space Controller, OSC)
-    功能：封装底层数学推导，对外只暴露控制接口
+    控制层：操作空间控制器(OSC)
     """
     def __init__(self, model, data, ee_name="hand"):
         self.model = model
@@ -79,23 +75,20 @@ class OperationalSpaceController:
     def compute_torque(self, x_tar, dx_tar, ddx_tar, Kp, Kd) -> tuple:
         """
         计算反馈线性化力矩
-        返回: (7维关节力矩向量, 当前末端误差)
+        返回:(7维关节力矩向量,当前末端误差)
         """
         # 1. 刷新状态与几何原点
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)
         
-        # ==========================================
-        # 修复核心：TCP (Tool Center Point) 精确标定补偿
-        # ==========================================
         # 获取 hand 基座的绝对位置和旋转矩阵
         hand_pos = self.data.xpos[self.ee_id]
         hand_mat = self.data.xmat[self.ee_id].reshape(3, 3)
         
-        # Franka 夹爪的指尖，相对于 hand 基座在 Z 轴方向上有约 10.34 厘米的物理延伸
+        # Franka 夹爪的指尖，相对于 hand 基座在 Z 轴方向上有约 10.34 厘米的延伸
         tcp_offset_local = np.array([0.0, 0.0, 0.1034])
         
-        # 通过矩阵乘法，算出【真正接触方块的指尖】在全局空间中的绝对坐标！
+        # 通过矩阵乘法，算出真正接触方块的指尖在全局空间中的绝对坐标
         x_curr = hand_pos + hand_mat @ tcp_offset_local
         
         # 2. 将真正的指尖坐标传入 mj_jac，计算指尖的雅可比矩阵
@@ -105,9 +98,9 @@ class OperationalSpaceController:
         dq_curr = self.data.qvel[:7]
         dx_curr = J_p @ dq_curr
         
-        # 3. 计算笛卡尔空间惯性矩阵 Lambda
+        # 3. 计算笛卡尔空间惯性矩阵Lambda
         mujoco.mj_fullM(self.model, self.M, self.data.qM)
-        M_7 = self.M[:7, :7] # 只取前 7 个关节的质量矩阵，后两个是爪子
+        M_7 = self.M[:7, :7] # 只取前7个关节的质量矩阵，后两个是爪子
         M_inv = np.linalg.inv(M_7)
         Lambda = np.linalg.inv(J_p @ M_inv @ J_p.T)
         
@@ -123,38 +116,33 @@ class OperationalSpaceController:
         F_cmd = Lambda @ (Kp * e + Kd * de + ddx_tar - J_dot_q_dot)
         tau_task = J_p.T @ F_cmd
         
-        # ==========================================
-        # 动态一致性零空间投影 (Null-Space Projection)
-        # 目的：在不影响末端压力的前提下，防止手腕折叠和奇点崩溃
-        # ==========================================
+        # 动态一致性零空间投影 目的：在不影响末端压力的前提下，防止手腕折叠和奇点崩溃
         # 计算零空间投影矩阵 N^T = I - J^T * Lambda * J * M^-1
         I = np.eye(7)
         N_T = I - J_p.T @ Lambda @ J_p @ M_inv
         
-        # 设定一个极其舒适的黄金避奇点姿态
+        # 设定避奇点姿态
         q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
         q_curr = self.data.qpos[:7]
         dq_curr = self.data.qvel[:7]
         
-        # 在关节空间施加一个柔和的 PD 弹簧力，试图保持姿态
+        # 关节空间施加一个柔和的PD弹簧力，保持姿态
         Kp_null = 50.0
         Kd_null = 5.0
         tau_posture = Kp_null * (q_home - q_curr) - Kd_null * dq_curr
         
-        # 强制投影到零空间(不干扰笛卡尔空间的末端, 即不产生末端加速度和影响末端的环境力)
+        # 投影到零空间(不干扰笛卡尔空间的末端, 即不产生末端加速度和影响末端的环境力)
         tau_null = N_T @ tau_posture
         
-        # 6. 综合控制律 = 主任务 + 零空间任务 + 动力学偏置
+        # 6. 综合控制\tau = 任务 + 零空间姿态纠正 + 动力学偏置
         tau_final = tau_task + tau_null + self.data.qfrc_bias[:7]
         
-        # 此时返回 tau_null，用于数学等式验证
         return tau_final, np.linalg.norm(e), tau_spring, tau_null
 
 
 class DataLogger:
     """
     【数据层】量化数据记录器
-    功能：高频记录仿真数据，离线保存并生成图表
     """
     def __init__(self):
         self.time_data = []
@@ -174,14 +162,14 @@ class DataLogger:
     def save_and_plot(self, filename="franka_tracking_log"):
         """仿真结束时调用，保存 CSV 并绘制图表"""
         
-        # 如果数组为空，直接返回，避免绘图崩溃掩盖真实报错
+        # 如果数组为空，直接返回
         if len(self.time_data) == 0:
-            print("⚠️ 警告：未记录到任何数据，跳过数据保存与绘图。请检查上方是否有逻辑报错！")
+            print("warning：未记录到任何数据")
             return
         
-        print(f"\n📊 正在保存量化数据至 {filename}.csv ...")
+        print(f"\n 保存数据至 {filename}.csv")
         
-        # 1. 导出 CSV (用于备用分析或导入 MATLAB)
+        # 1. 导出 CSV
         with open(f"{filename}.csv", mode="w", newline="") as f:
             writer = csv.writer(f)
             header = ["Time(s)", "Target_X", "Target_Y", "Target_Z", 
@@ -196,15 +184,15 @@ class DataLogger:
                       self.torque_data[i].tolist()
                 writer.writerow(row)
                 
-        # 2. 绘制工程级图表
+        # 2. 绘制图表
         self._plot_curves()
 
     def _plot_curves(self):
-        print("📈 正在生成可视化图表...")
+        print("生成可视化图表...")
         plt.style.use('seaborn-v0_8-whitegrid')
         fig = plt.figure(figsize=(14, 10))
         
-        # 添加专属署名
+        # 添加署名
         fig.text(0.98, 0.02, "Copyright (c) [2026] [Wang qianhang]", 
                  ha='right', va='bottom', fontsize=10, color='gray', alpha=0.7)
 
@@ -212,7 +200,7 @@ class DataLogger:
         errors = np.array(self.error_norm_data)
         torques = np.array(self.torque_data)
 
-        # 子图 1：稳态误差收敛曲线
+        # 子图 1：稳态误差收敛
         ax1 = plt.subplot(2, 1, 1)
         ax1.plot(times, errors * 1000, color='#d62728', linewidth=2, label="Tracking Error")
         ax1.set_title("Cartesian Space Tracking Error Norm", fontsize=14, fontweight='bold')
@@ -221,7 +209,7 @@ class DataLogger:
         ax1.grid(True, linestyle='--', alpha=0.7)
         ax1.legend(loc="upper right")
 
-        # 子图 2：七轴关节力矩输出曲线 (考察是否饱和)
+        # 子图 2：七轴关节力矩输出
         ax2 = plt.subplot(2, 1, 2)
         colors = plt.cm.viridis(np.linspace(0, 1, 7))
         for i in range(7):
@@ -255,10 +243,10 @@ class FrankaSimNode:
         q_home = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
         self.data.qpos[:7] = q_home
         mujoco.mj_forward(self.model, self.data)
-        print("✅ 机械臂位形已初始化。")
+        print("机械臂位形已初始化。")
         
     def run(self):
-        print("🚀 启动仿真... (关闭渲染窗口或按 Ctrl+C 自动生成图表)")
+        print("启动仿真 (Ctrl+C生成图表)")
         try:
             with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
                 real_start_time = time.time()
@@ -285,11 +273,11 @@ class FrankaSimNode:
                             residual = tau_spring + tau_null + tau_env
                             residual_norm = np.linalg.norm(residual)
                             
-                            print(f"[验证] Time: {t:.2f}s")
-                            print(f"  -> 主弹簧力矩 (tau_spring): {tau_spring.round(2)}")
-                            print(f"  -> 零空间力矩 (tau_null)  : {tau_null.round(2)}")
-                            print(f"  -> 环境力矩 (tau_env)   : {tau_env.round(2)}")
-                            print(f"  -> 残差范数 (Residual)  : {residual_norm:.6f} Nm")
+                            print(f"[Time: {t:.2f}s]")
+                            print(f"主弹簧力矩 (tau_spring): {tau_spring.round(2)}")
+                            print(f"零空间力矩 (tau_null)  : {tau_null.round(2)}")
+                            print(f"环境力矩 (tau_env)   : {tau_env.round(2)}")
+                            print(f"残差范数 (Residual)  : {residual_norm:.6f} Nm")
                             print("-" * 50)
                         
                         # 记录数据
@@ -297,9 +285,9 @@ class FrankaSimNode:
                         
                     viewer.sync()
         except KeyboardInterrupt:
-            print("\n🛑 接收到中断信号，正在终止仿真...")
+            print("\n结束仿真")
         finally:
-            # 无论是因为关闭窗口还是 Ctrl+C 退出，都会安全触发数据保存与绘图
+            # 关闭窗口或Ctrl+C退出，都触发数据保存与绘图
             self.logger.save_and_plot()
 
 
