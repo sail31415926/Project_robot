@@ -1,6 +1,7 @@
 import mujoco
 import mujoco.viewer
 import numpy as np
+from pathlib import Path
 import time
 import csv
 import matplotlib.pyplot as plt
@@ -228,7 +229,15 @@ class DataLogger:
 class FrankaSimNode:
     """【执行层】：生命周期管理和 DataLogger 挂载"""
     def __init__(self, xml_path="scene.xml"):
-        self.model = mujoco.MjModel.from_xml_path(xml_path)
+        # 当前脚本所在文件夹
+        cur_script_dir = Path(__file__).resolve().parent
+        # 拼接xml完整路径
+        full_xml_path = cur_script_dir / xml_path
+
+        if not full_xml_path.exists():
+            raise FileNotFoundError(f"XML 文件不存在: {full_xml_path}")
+        
+        self.model = mujoco.MjModel.from_xml_path(str(full_xml_path))
         self.data = mujoco.MjData(self.model)
         
         self.controller = OperationalSpaceController(self.model, self.data)# 挂载控制器
