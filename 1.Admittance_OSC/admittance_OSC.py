@@ -70,10 +70,11 @@ class AdmittanceFilter:
         if self.x_c is None:
             self.x_c = x_curr.copy()
             
-        # 导纳核心微分方程：Md*ddx_c + Bd*dx_c + Kd*(x_c - x_d) = F_ext
+        # 导纳核心微分方程：Md*ddot{e} + Bd*dot{e} + Kd*e = F_ext, e = x_c - x_d
         # 求解柔顺加速度 ddx_c
         error = self.x_c - x_d
-        ddx_c = self.Md_inv @ (F_ext - self.Bd @ self.dx_c - self.Kd @ error)
+        derror = self.dx_c - dx_d
+        ddx_c = ddx_d + self.Md_inv @ (F_ext - self.Bd @ derror - self.Kd @ error)
         
         # 欧拉数值积分，更新柔顺速度和位置
         self.dx_c += ddx_c * self.dt
